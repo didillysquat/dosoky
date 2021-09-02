@@ -19,6 +19,10 @@ import os
 import pickle
 import itertools
 
+import cartopy.crs as ccrs
+import cartopy
+from cartopy.feature import NaturalEarthFeature, LAND, COASTLINE, OCEAN
+
 class DosokyMeta:
     def __init__(self, plot_no_lat_lon=False):
         if os.path.exists("cache/meta_df.p"):
@@ -169,9 +173,26 @@ class DosokyMeta:
         foo = "bar"
 
         # Make base plot of the sites
-        self.fig, self.ax = plt.subplots(nrows=1, ncols=1)
-        self.ax.set_xlabel("longitude Decimal Degree")
-        self.ax.set_ylabel("latitude Decimal Degree")
+        # self.fig, self.ax = plt.subplots(nrows=1, ncols=1)
+        # self.ax.set_xlabel("longitude Decimal Degree")
+        # self.ax.set_ylabel("latitude Decimal Degree")
+        self.fig = plt.figure(figsize=(15, 10))
+        self.ax = plt.subplot(projection=ccrs.PlateCarree(), zorder=1)
+        # land_110m, ocean_110m, boundary_110m = self._get_naural_earth_features_big_map()
+        # print('Drawing annotations on map\n')
+        # self._draw_natural_earth_features_big_map(land_110m, ocean_110m, boundary_110m)
+        # print('Annotations complete\n')
+        # Managed to download the ocean and land files from here: https://github.com/ingmapping/Basemaps_QTiles/tree/master/WorldMap/Data
+        self.ax.add_feature(LAND, facecolor="white",
+                                        edgecolor='black', linewidth=0.2)
+        self.ax.add_feature(OCEAN, facecolor='#88b5e0',
+                                        edgecolor='black', linewidth=0.2, alpha=0.3)
+        self.ax.set_extent(extents=(
+            32, 150, -6, 32), crs=ccrs.PlateCarree())
+        # plt.savefig("harry.png", dpi=300)
+        foo = "bar"
+
+
         # We want to plot up a scatter of the lat and longs
         # with size
         # I think it is helpful to have a seperate set of points for the dosoky, no lat long, and others
@@ -198,6 +219,29 @@ class DosokyMeta:
         # Get the data set names of samples with no lat lon
         no_lat_lon_ds_set = {self.data_set_uid_to_data_set_name_dict[self.sample_uid_to_dataset_uid_dict[_]] for _ in self.sample_uid_no_lat_lon}
 
+    @staticmethod
+    def _get_naural_earth_features_big_map():
+        land_110m = cartopy.feature.NaturalEarthFeature(category='physical', name='land',
+                                                        scale='50m')
+        ocean_110m = cartopy.feature.NaturalEarthFeature(category='physical', name='ocean',
+                                                         scale='50m')
+        boundary_110m = cartopy.feature.NaturalEarthFeature(category='cultural',
+                                                            name='admin_0_boundary_lines_land', scale='110m')
+        return land_110m, ocean_110m, boundary_110m
+
+    def _draw_natural_earth_features_big_map(self, land_110m, ocean_110m, boundary_110m):
+        """NB the RGB must be a tuple in a list and the R, G, B must be given as a value between 0 and 1"""
+        # self.ax.add_feature(land_110m, facecolor=[(238 / 255, 239 / 255, 219 / 255)],
+        #                               edgecolor='black', linewidth=0.2)
+        
+        self.ax.add_feature(land_110m, facecolor="white",
+                                        edgecolor='black', linewidth=0.2, zorder=1)
+        
+        self.ax.add_feature(ocean_110m, facecolor='#88b5e0',
+                                        edgecolor='black', linewidth=0.2)
+        
+        self.ax.add_feature(boundary_110m, edgecolor='gray', linewidth=0.2, facecolor='None')
+
     def start(self):
         # The main figure idea I had was to plot a map that shows the inter connectivity
         # between the sites according to the profiles that they have in common
@@ -222,6 +266,15 @@ class DosokyMeta:
         # Then we want to find all pairwise comparisions between those and plot a line to represent these.
         # That will be our network.
         for profile in self.profile_count_df_rel:
+            clade = self.profile_meta_df.at[profile, "Clade"]
+            if clade == "C":
+                color = "green"
+            elif clade == "A":
+                color = "blue"
+            elif clade == "D":
+                color = "red"
+            else:
+                color = "k"
             print(f"plotting {self.profile_meta_df.at[profile, 'ITS2 type profile']}")
             profile_ser = self.profile_count_df_rel[profile]
             dss_uids = profile_ser[profile_ser != 0].index.values
@@ -229,7 +282,7 @@ class DosokyMeta:
             for dss in dss_uids:
                 lat_lon_dd[self.dss_to_lat_lon_dict[dss]] += 1
             for lat_lon_1, lat_lon_2 in itertools.combinations(lat_lon_dd.keys(), 2):
-                self.ax.plot([lat_lon_1[1], lat_lon_2[1]], [lat_lon_1[0], lat_lon_2[0]], color='k', linestyle='-', linewidth=0.5, alpha=0.2)
+                self.ax.plot([lat_lon_1[1], lat_lon_2[1]], [lat_lon_1[0], lat_lon_2[0]], color=color, linestyle='-', linewidth=0.5, alpha=0.2)
 
         self.fig.savefig("harry.png", dpi=1200)
 

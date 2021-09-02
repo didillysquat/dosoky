@@ -1,0 +1,17 @@
+name: dosoky_env
+channels:
+  - conda-forge
+  - defaults
+  - bioconda
+dependencies:
+  - python=3
+  - pandas
+  - matplotlib
+  - cartopy
+  - numpy
+  - xlrd
+  - scipy
+  - Django
+  - psycopg2
+  - plumbum
+
