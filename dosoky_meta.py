@@ -29,7 +29,7 @@ class DosokyMeta:
     # area can be "rs", "rs_pag" or "global".
     # dosoky_centric = True or False. If True then we will only draw lines to and from the dosoky
     # site and not between the other sites.
-    def __init__(self, plot_no_lat_lon=False, area="rs_pag", dosoky_centric=True):
+    def __init__(self, plot_no_lat_lon=False, area="global", dosoky_centric=True):
         self.dosoky_centric = dosoky_centric
         
         self.meta_df, self.post_med_count_df_abs, self.post_med_count_df_rel, self.profile_meta_df, self.profile_count_df_rel = self._read_in_symportal_objects()
@@ -349,6 +349,7 @@ class DosokyMeta:
         # Then we want to find all pairwise comparisions between those and plot a line to represent these.
         # That will be our network.
         all_lat_lons = set()
+        profile_to_num_dss_lat_lon = {}
         for profile in self.profile_count_df_rel:
             clade = self.profile_meta_df.at[profile, "Clade"]
             if clade == "C":
@@ -371,19 +372,25 @@ class DosokyMeta:
                 else:
                     other_lat_lon_dd[self.dss_to_lat_lon_dict[dss]] += 1
                 all_lat_lons.add(self.dss_to_lat_lon_dict[dss])
+            
+            profile_to_num_dss_lat_lon[profile] = (len(dss_uids), len(other_lat_lon_dd.keys()))
+
             if len(dss_uids) > 0:
                 if not self.dosoky_centric:
                     # We want to plot a line between all sites at which the given proifle was found
                     lat_lon_dd = {**dosoky_lat_lon_dd, **other_lat_lon_dd}
                     for lat_lon_1, lat_lon_2 in itertools.combinations(lat_lon_dd.keys(), 2):
                         # [x1: 70, x2: 90], [y1: 90, y2: 200]
-                        self.ax.plot([lat_lon_1[1], lat_lon_2[1]], [lat_lon_1[0], lat_lon_2[0]], color=color, linestyle='-', linewidth=0.5, alpha=0.2, zorder=2)
+                        self.ax.plot([lat_lon_1[1], lat_lon_2[1]], [lat_lon_1[0], lat_lon_2[0]], color=color, linestyle='-', linewidth=0.5, alpha=1, zorder=2)
                 else:
                     # We only want to plot from each the dosoky sites to each of the other sites
                     for lat_lon, value in other_lat_lon_dd.items():
-                        self.ax.plot([self.dosoky_lon, lat_lon[1]], [self.dosoky_lat, lat_lon[0]], color=color, linestyle='-', linewidth=0.5, alpha=0.2, zorder=2)
+                        self.ax.plot([self.dosoky_lon, lat_lon[1]], [self.dosoky_lat, lat_lon[0]], color=color, linestyle='-', linewidth=0.5, alpha=1, zorder=2)
+            else:
+                foo = "bar"
 
-
+        for profile, vals in profile_to_num_dss_lat_lon.items():
+            print(f"{profile}: {vals[0]}, {vals[1]}")
 
         self.fig.savefig("harry.png", dpi=1200)
 
