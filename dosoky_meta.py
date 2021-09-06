@@ -29,7 +29,9 @@ class DosokyMeta:
     # area can be "rs", "rs_pag" or "global".
     # dosoky_centric = True or False. If True then we will only draw lines to and from the dosoky
     # site and not between the other sites.
-    def __init__(self, plot_no_lat_lon=False, area="rs"):
+    def __init__(self, plot_no_lat_lon=False, area="rs_pag", dosoky_centric=True):
+        self.dosoky_centric = dosoky_centric
+        
         self.meta_df, self.post_med_count_df_abs, self.post_med_count_df_rel, self.profile_meta_df, self.profile_count_df_rel = self._read_in_symportal_objects()
 
         self._remove_bad_profiles_and_associated_samples()
@@ -52,7 +54,7 @@ class DosokyMeta:
         # Sort the profile count df by abundance of the profiles
         self.profile_count_df_rel = self.profile_count_df_rel[self.profile_count_df_rel.sum(axis=0).sort_values(ascending=False).index.values]
 
-        self.sample_uid_to_dataset_uid_dict, self.sample_uid_to_dataset_name_dict, self.data_set_uid_to_data_set_name_dict, self.dosoky_lat, self.dosoky_lon, self.dosoky_id = self._get_lat_lon_info()
+        self.sample_uid_to_dataset_uid_dict, self.sample_uid_to_dataset_name_dict, self.data_set_uid_to_data_set_name_dict, self.dosoky_lat, self.dosoky_lon, self.dosoky_id, self.dosoky_dss_list = self._get_lat_lon_info()
 
         self.fig, self.ax, self.lat_lims, self.lon_lims = self._make_base_map(area=area)
 
@@ -162,6 +164,7 @@ class DosokyMeta:
         for ds in self.data_sets:
             if ds.name == "20190612_dosoky":
                 dosoky_id = ds.id
+                dosoky_dss_list = list(DataSetSample.objects.filter(data_submission_from=ds))
             data_set_uid_to_data_set_name_dict[ds.id] = ds.name
             for dss in DataSetSample.objects.filter(data_submission_from=ds):
                 # If it is one of the datasetsamples that we kicked out due to being with a dodgy
@@ -175,7 +178,7 @@ class DosokyMeta:
         self.meta_df["data_set_uid"] = [sample_uid_to_dataset_uid_dict[_] for _ in self.meta_df.index]
         dosoky_lat, dosoky_lon = 25.54, 34.64
         
-        return sample_uid_to_dataset_uid_dict, sample_uid_to_dataset_name_dict, data_set_uid_to_data_set_name_dict, dosoky_lat, dosoky_lon, dosoky_id
+        return sample_uid_to_dataset_uid_dict, sample_uid_to_dataset_name_dict, data_set_uid_to_data_set_name_dict, dosoky_lat, dosoky_lon, dosoky_id, dosoky_dss_list
 
     def _remove_schupp_larval(self):
         # We then also want to remove most of the samples from the schupp analysis
@@ -263,14 +266,14 @@ class DosokyMeta:
         if os.path.exists("cache/meta_df.p"):
             meta_df = pickle.load(open("cache/meta_df.p", "rb"))
         else:
-            meta_df = pd.read_csv("20210902T051904/post_med_seqs/169_20210830_DBV_20210902T051904.seqs.absolute.meta_only.txt", sep="\t")
+            meta_df = pd.read_csv("20210906T062437/post_med_seqs/169_20210830_DBV_20210906T062437.seqs.absolute.meta_only.txt", sep="\t")
             meta_df.set_index("sample_uid", inplace=True, drop=True)
             pickle.dump(meta_df, open("cache/meta_df.p", "wb"))
         
         if os.path.exists("cache/post_med_count_df_abs.p"):
             post_med_count_df_abs = pickle.load(open("cache/post_med_count_df_abs.p", "rb"))
         else:
-            post_med_count_df_abs = pd.read_csv("20210902T051904/post_med_seqs/169_20210830_DBV_20210902T051904.seqs.absolute.abund_only.txt", sep="\t")
+            post_med_count_df_abs = pd.read_csv("20210906T062437/post_med_seqs/169_20210830_DBV_20210906T062437.seqs.absolute.abund_only.txt", sep="\t")
             post_med_count_df_abs.set_index("sample_uid", inplace=True, drop=True)
             pickle.dump(post_med_count_df_abs, open("cache/post_med_count_df_abs.p", "wb"))
         
@@ -283,7 +286,7 @@ class DosokyMeta:
         if os.path.exists("cache/profile_meta_df.p"):
             profile_meta_df = pickle.load(open("cache/profile_meta_df.p", "rb"))
         else:
-            profile_meta_df = pd.read_csv("20210902T051904/its2_type_profiles/169_20210830_DBV_20210902T051904.profiles.meta_only.txt", sep="\t")
+            profile_meta_df = pd.read_csv("20210906T062437/its2_type_profiles/169_20210830_DBV_20210906T062437.profiles.meta_only.txt", sep="\t")
             profile_meta_df.set_index("ITS2 type profile UID", inplace=True, drop=True)
             pickle.dump(profile_meta_df, open("cache/profile_meta_df.p", "wb"))
         profile_uid_to_profile_name_dict = {k:v for k, v in profile_meta_df["ITS2 type profile"].items()}
@@ -291,7 +294,7 @@ class DosokyMeta:
         if os.path.exists("cache/profile_count_df_rel.p"):
             profile_count_df_rel = pickle.load(open("cache/profile_count_df_rel.p", "rb"))
         else:
-            profile_count_df_rel = pd.read_csv("20210902T051904/its2_type_profiles/169_20210830_DBV_20210902T051904.profiles.relative.abund_only.txt", sep="\t")
+            profile_count_df_rel = pd.read_csv("20210906T062437/its2_type_profiles/169_20210830_DBV_20210906T062437.profiles.relative.abund_only.txt", sep="\t")
             profile_count_df_rel.set_index("sample_uid", inplace=True, drop=True)
             # make the headers int
             profile_count_df_rel.columns = [int(_) for _ in list(profile_count_df_rel)]
@@ -345,6 +348,7 @@ class DosokyMeta:
         # Then make a count dict of the lat lons associated with those
         # Then we want to find all pairwise comparisions between those and plot a line to represent these.
         # That will be our network.
+        all_lat_lons = set()
         for profile in self.profile_count_df_rel:
             clade = self.profile_meta_df.at[profile, "Clade"]
             if clade == "C":
@@ -358,11 +362,28 @@ class DosokyMeta:
             print(f"plotting {self.profile_meta_df.at[profile, 'ITS2 type profile']}")
             profile_ser = self.profile_count_df_rel[profile]
             dss_uids = profile_ser[profile_ser != 0].index.values
-            lat_lon_dd = defaultdict(int)
+            dosoky_lat_lon_dd = defaultdict(int)
+            other_lat_lon_dd = defaultdict(int)
+            
             for dss in dss_uids:
-                lat_lon_dd[self.dss_to_lat_lon_dict[dss]] += 1
-            for lat_lon_1, lat_lon_2 in itertools.combinations(lat_lon_dd.keys(), 2):
-                self.ax.plot([lat_lon_1[1], lat_lon_2[1]], [lat_lon_1[0], lat_lon_2[0]], color=color, linestyle='-', linewidth=0.5, alpha=0.2)
+                if dss in self.dosoky_dss_list:
+                    dosoky_lat_lon_dd[self.dss_to_lat_lon_dict[dss]] += 1
+                else:
+                    other_lat_lon_dd[self.dss_to_lat_lon_dict[dss]] += 1
+                all_lat_lons.add(self.dss_to_lat_lon_dict[dss])
+            if len(dss_uids) > 0:
+                if not self.dosoky_centric:
+                    # We want to plot a line between all sites at which the given proifle was found
+                    lat_lon_dd = {**dosoky_lat_lon_dd, **other_lat_lon_dd}
+                    for lat_lon_1, lat_lon_2 in itertools.combinations(lat_lon_dd.keys(), 2):
+                        # [x1: 70, x2: 90], [y1: 90, y2: 200]
+                        self.ax.plot([lat_lon_1[1], lat_lon_2[1]], [lat_lon_1[0], lat_lon_2[0]], color=color, linestyle='-', linewidth=0.5, alpha=0.2, zorder=2)
+                else:
+                    # We only want to plot from each the dosoky sites to each of the other sites
+                    for lat_lon, value in other_lat_lon_dd.items():
+                        self.ax.plot([self.dosoky_lon, lat_lon[1]], [self.dosoky_lat, lat_lon[0]], color=color, linestyle='-', linewidth=0.5, alpha=0.2, zorder=2)
+
+
 
         self.fig.savefig("harry.png", dpi=1200)
 
