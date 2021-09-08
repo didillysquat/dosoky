@@ -15,6 +15,11 @@ import pandas as pd
 import matplotlib as mpl
 mpl.use('agg')
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from matplotlib.collections import PatchCollection
+from matplotlib.colors import ListedColormap
+import numpy as np
+import matplotlib.gridspec as gridspec
 import os
 import pickle
 import itertools
@@ -23,14 +28,18 @@ import cartopy.crs as ccrs
 import cartopy
 from cartopy.feature import NaturalEarthFeature, LAND, COASTLINE, OCEAN
 from cartopy.mpl.gridliner import Gridliner
+import math
+import spcolors
 
 class DosokyMeta:
     # The input attributes control the map area we are plotting and how the networks are plotted
     # area can be "rs", "rs_pag" or "global".
     # dosoky_centric = True or False. If True then we will only draw lines to and from the dosoky
     # site and not between the other sites.
-    def __init__(self, plot_no_lat_lon=False, area="global", dosoky_centric=True):
+    # clade can be A, C, D or all
+    def __init__(self, plot_no_lat_lon=False, area="rs_pag", dosoky_centric=False, clade="C"):
         self.dosoky_centric = dosoky_centric
+        self.clade = clade
         
         self.meta_df, self.post_med_count_df_abs, self.post_med_count_df_rel, self.profile_meta_df, self.profile_count_df_rel = self._read_in_symportal_objects()
 
@@ -62,6 +71,17 @@ class DosokyMeta:
 
         self._remove_samples_outside_of_chosen_area()
 
+        # If we are working as dosoky centric then we only want to conern ourselves
+        # with those profiles that were found at the dososky sites.
+        
+        self.dosoky_profiles_list = self._get_dosoky_profiles_list()
+
+    def _get_dosoky_profiles_list(self):
+        dosoky_dss_list_still_good = [_ for _ in self.profile_count_df_rel.index if _ in [_.id for _ in self.dosoky_dss_list]]
+        dosoky_profiles_df = self.profile_count_df_rel.loc[dosoky_dss_list_still_good,]
+        dosoky_profiles_df = dosoky_profiles_df.loc[:,dosoky_profiles_df.any(axis=0)]
+        return list(dosoky_profiles_df)
+
     def _remove_samples_outside_of_chosen_area(self):
         # We have to control which samples are plotted up either
         # at the point of plotting, or by removing them from
@@ -79,6 +99,10 @@ class DosokyMeta:
             to_keep = [_ for _ in self.meta_df.index if _ not in dss_to_cut]
             self.meta_df = self.meta_df.loc[to_keep,]
             self.profile_count_df_rel = self.profile_count_df_rel.loc[to_keep,]
+            # Also need to remove the now empty profiles
+            profiles_to_keep = self.profile_count_df_rel.any(axis=0)
+            self.profile_count_df_rel = self.profile_count_df_rel.loc[:,profiles_to_keep]
+            self.profile_meta_df = self.profile_meta_df.loc[profiles_to_keep,]
             self.post_med_count_df_abs = self.post_med_count_df_abs.loc[to_keep,]
             self.post_med_count_df_rel = self.post_med_count_df_rel.loc[to_keep,]
         else:
@@ -325,7 +349,210 @@ class DosokyMeta:
         
         self.ax.add_feature(boundary_110m, edgecolor='gray', linewidth=0.2, facecolor='None')
 
-    def start(self):
+    def _make_seq_color_dict(self, ref_seqs_from_profiles):
+        seq_color_dict = {}
+        for seq_name in ref_seqs_from_profiles:
+            if seq_name in self.pre_def_seq_color_dict:
+                seq_color_dict[seq_name] = self.pre_def_seq_color_dict[seq_name]
+            else:
+                try:
+                    seq_color_dict[seq_name] = next(self.color_hash_iterator)
+                except StopIteration:
+                    seq_color_dict[seq_name] = next(self.grey_iterator)
+        return seq_color_dict
+
+    def start_bars_only(self):
+        # here we will aim to plot up a figure for each of the profiles that
+        # will have a main feature of the dosoky samples post-MED plotted
+        # We will plot the samples grouped by lat lon pairing as distance fromthe dosoky site
+        # We will then manually look at the produced plots and see which profiles are good
+        # and which are bad.
+
+        # Overwrite the current self.fig and self.ax to work with a gridspec setup
+
+        
+        # self.color_dict = self._make_seq_color_dict(self.post_med_count_df_rel.columns)
+
+        for profile in self.profile_count_df_rel:
+            # We are only interested in those profiles that were found in the dosoky
+            if self.dosoky_centric:
+                if profile not in self.dosoky_profiles_list:
+                    continue
+            # Get a list of the datasetsamples that have the profile
+            # Then make a dict of lat_long to samples
+            # Then make a lat_lon_to_dist dict
+            # Then in order of the distance, plot up the groups of samples
+            # For each group we'll also want the dataset name. We can go
+            # from dss uid to ds uid to ds name.
+            # We will have to do the region based on the lat lon.
+            # if lon < 45 then rs
+            # if lon > 140 then guam
+            # if lon > 100 then singapore
+            # if lat < 0 then seychelles 
+            # else pag 
+            fig = plt.figure(figsize=(15, 10))
+            gs = gridspec.GridSpec(nrows=9, ncols=1)
+            self.title_ax = plt.subplot(gs[0:1, :])
+            self.bar_ax = plt.subplot(gs[1:4, :])
+            self.leg_ax = plt.subplot(gs[4:5, :])
+            self.dataset_ax = plt.subplot(gs[5:7, :])
+            self.region_ax = plt.subplot(gs[7:8, :])
+            self.species_ax = plt.subplot(gs[8:9, :])
+
+            # First plot up the profile info
+            profile_name = self.profile_meta_df.at[profile, "ITS2 type profile"]
+            self.title_ax.text(s=f"{profile_name}; {profile}", x=0.5, y=0.5, va="center", ha="center")
+            profile_clade = self.profile_meta_df.at[profile, "Clade"]
+
+            # Now plot up the barcharts
+            # Get a sub count table of the samples
+            ser = self.profile_count_df_rel[profile]
+            profile_dss = list(ser[ser != 0].index)
+            ser = ser[profile_dss]
+
+            # get lat_lon_to_dss_for_profile_dict
+            lat_lon_to_dss_for_profile_dict = defaultdict(list)
+            for dss, abund in ser.items():
+                lat_lon_to_dss_for_profile_dict[self.dss_to_lat_lon_dict[dss]].append(dss)
+
+            # get lat_lon_to_dist_to_dosoky_dict
+            lat_lon_to_dist_to_dosoky_dict = {}
+            for lat_lon in lat_lon_to_dss_for_profile_dict.keys():
+                # get the distance eDistance = math.dist([Px, Py], [Qx, Qy])
+                dist = math.dist([self.dosoky_lon, self.dosoky_lat], [lat_lon[1], lat_lon[0]])
+                lat_lon_to_dist_to_dosoky_dict[lat_lon] = dist
+            
+            # Do an intial slim down of the count dict for the given profile.
+            # We will then slim down further to the lat lon specific dds set
+            clade_seqs = [_ for _ in list(self.post_med_count_df_rel) if _.startswith(profile_clade) or _.endswith(profile_clade)]
+            count_df_to_plot = self.post_med_count_df_rel.loc[:,clade_seqs]
+            seqs_with_counts_profile = count_df_to_plot.loc[profile_dss,].any(axis=0)
+            count_df_to_plot_profile = count_df_to_plot.loc[profile_dss, seqs_with_counts_profile]
+            # Make sure they are in order
+            count_df_to_plot_profile = count_df_to_plot_profile[count_df_to_plot_profile.sum(axis=0).sort_values(ascending=False).index.values]
+            # Make sure that the DIVs of the given profile are plotted in order
+            div_list = profile_name.replace("/","_").replace("-","_").split("_")
+            non_div_seqs = [_ for _ in count_df_to_plot_profile.columns if _ not in div_list]
+            div_order = div_list + non_div_seqs
+            count_df_to_plot_profile = count_df_to_plot_profile[div_order]
+            # Setup the colour dict
+            self.color_hash_iterator = iter(spcolors.color_list)
+            self.grey_iterator = itertools.cycle(spcolors.greys)
+            self.pre_def_seq_color_dict = spcolors.pre_def_color_dict
+            self.color_dict = self._make_seq_color_dict(count_df_to_plot_profile.columns)
+
+            # Plot up the seq legend 
+            leg_bar_patches = []
+            index_for_plot = 0
+            for div in div_list:
+                bottom = 0
+                leg_bar_patches.append(Rectangle(
+                            (index_for_plot, bottom),
+                            0.5,
+                            1, color=self.color_dict[div]))
+                self.leg_ax.text(s=div, x=index_for_plot + .75, y=0.5, ha="left", va="center")
+                index_for_plot += 2
+            
+            patches_collection = PatchCollection(leg_bar_patches, match_original=True)
+            # patches_collection.set_array(np.arange(len(bar_patches)))
+            self.leg_ax.add_collection(patches_collection)
+            self.leg_ax.set_xlim(0, index_for_plot)
+
+            # then plot up the samples in order of the distances
+            index_for_plot = -0.5
+            bar_patches = []
+            color_list = []
+            for lat_lon in [_[0] for _ in sorted(lat_lon_to_dist_to_dosoky_dict.items(), key=lambda x: x[1], reverse=False)]:
+                index_for_plot += 0.5
+                start_index = index_for_plot
+                dss = lat_lon_to_dss_for_profile_dict[lat_lon]
+                # slim down the post_med
+                # Want to limit to those sequences of the same clade as the profile
+                
+                seqs_with_counts = count_df_to_plot_profile.loc[dss,].any(axis=0)
+                count_df_to_plot = count_df_to_plot_profile.loc[dss, seqs_with_counts]
+                
+                # renormalise to 1
+                count_df_to_plot = count_df_to_plot.div(count_df_to_plot.sum(axis=1), axis=0)
+                for sample_uid in count_df_to_plot.index:
+                    bottom = 0
+                    non_zero_seq_abundances = count_df_to_plot.loc[sample_uid][
+                        count_df_to_plot.loc[sample_uid] > 0]
+                    
+                    for obj_uid, abund in non_zero_seq_abundances.iteritems():
+                        bar_patches.append(Rectangle(
+                            (index_for_plot - 0.5, bottom),
+                            1,
+                            abund, color=self.color_dict[obj_uid]))
+                        
+                        bottom += abund
+                        color_list.append(self.color_dict[obj_uid])
+                    
+
+                    # Add species info
+                    genus = self.meta_df.at[sample_uid, "host_genus"]
+                    species = self.meta_df.at[sample_uid, "host_species"]
+                    if species == "NoData":
+                        if genus == "NoData":
+                            pass
+                        else:
+                            # genus with no species
+                            self.species_ax.text(s=f"{genus} spp.", x=index_for_plot, y=0.5, va="center", ha="center", rotation="vertical")
+                    else:
+                        # Genus and species
+                        self.species_ax.text(s=f"{genus[0]} {species}", x=index_for_plot, y=0.5, va="center", ha="center", rotation="vertical")
+
+                    index_for_plot += 1
+                
+                # At this point we want to add the details of the dataset name and the region
+                data_set_name = self.sample_uid_to_dataset_name_dict[sample_uid]
+                self.dataset_ax.text(s=data_set_name, x=start_index + ((index_for_plot - start_index)/2) - 0.5, y=0.5, rotation="vertical", ha="center", va="center")
+                
+                # Add the region information to the plot
+                if lat_lon[1] < 45:
+                    region = "RS"
+                elif lat_lon[1] > 140:
+                    region = "Guam"
+                elif lat_lon[1] > 100:
+                    region = "Singapore"
+                elif lat_lon[0] < 0:
+                    region = "Seychelles"
+                else:
+                    region = "PAG"
+                self.region_ax.text(s=region, x=start_index + ((index_for_plot - start_index)/2) - 0.5, y=0.5, rotation="vertical", ha="center", va="center")
+
+            
+            # Now render the bars on the plot
+            listed_color_map = ListedColormap(color_list)
+            patches_collection = PatchCollection(bar_patches, cmap=listed_color_map)
+            patches_collection.set_array(np.arange(len(bar_patches)))
+            self.bar_ax.add_collection(patches_collection)
+            
+            # adjust the lims of the dataset and region axes
+            self.bar_ax.autoscale_view()
+            self.region_ax.set_xlim(self.bar_ax.get_xlim())
+            self.region_ax.set_ylim(0,1)
+            self.dataset_ax.set_xlim(self.bar_ax.get_xlim())
+            self.dataset_ax.set_ylim(0,1)
+            self.species_ax.set_xlim(self.bar_ax.get_xlim())
+            self.species_ax.set_ylim(0,1)
+
+            for ax in [self.bar_ax, self.title_ax, self.leg_ax, self.region_ax, self.dataset_ax, self.species_ax]:
+                ax.spines['top'].set_visible(False)
+                ax.spines['left'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['bottom'].set_visible(False)
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+            plt.savefig(f"profile_plots/{profile}_{profile_clade}.png", dpi=1200)
+            plt.close()
+
+        foo = "bar"
+
+
+
+    def start_map_only(self):
         # The main figure idea I had was to plot a map that shows the inter connectivity
         # between the sites according to the profiles that they have in common
         # To start with we can work in a Dosoky centric manner where we work through
@@ -339,8 +566,7 @@ class DosokyMeta:
         # ona regular plot.
         
         # self._plot_up_dosoky_centric()
-
-        foo = "bar"
+        
         # At this point we have the connectivity on a dosoky centric way plotted.
         # The other approach that will be interesting will be to plot the interconnectivity between all profiles
         # The way to do this will be to go profile by profile
@@ -348,10 +574,21 @@ class DosokyMeta:
         # Then make a count dict of the lat lons associated with those
         # Then we want to find all pairwise comparisions between those and plot a line to represent these.
         # That will be our network.
+
+        # If we are working as dosoky centric then we only want to conern ourselves
+        # with those profiles that were found at the dososky sites.
+        
+
         all_lat_lons = set()
         profile_to_num_dss_lat_lon = {}
         for profile in self.profile_count_df_rel:
+            if self.dosoky_centric:
+                if profile not in self.dosoky_profiles_list:
+                    continue
             clade = self.profile_meta_df.at[profile, "Clade"]
+            if self.clade != "all":
+                if clade != self.clade:
+                    continue
             if clade == "C":
                 color = "green"
             elif clade == "A":
@@ -393,6 +630,19 @@ class DosokyMeta:
             print(f"{profile}: {vals[0]}, {vals[1]}")
 
         self.fig.savefig("harry.png", dpi=1200)
+        plt.close()
+        self.fig, self.ax = plt.subplots(nrows=1, ncols=1)
+        num_sample_num_site_vals_as_list = list(profile_to_num_dss_lat_lon.values())
+        self.ax.scatter(x=[_[0] for _ in num_sample_num_site_vals_as_list], y=[[_[1] for _ in num_sample_num_site_vals_as_list]])
+        self.ax.set_xlabel("num samples")
+        self.ax.set_ylabel("num sites")
+        o_xlim = self.ax.get_xlim()
+        o_ylim = self.ax.get_ylim()
+        self.ax.vlines(x=20, ymin=self.ax.get_ylim()[0], ymax=self.ax.get_ylim()[1], color="black")
+        self.ax.hlines(y=10, xmin=self.ax.get_xlim()[0], xmax=self.ax.get_xlim()[1], color="black")
+        self.ax.set_xlim(o_xlim)
+        self.ax.set_ylim(o_ylim)
+        self.fig.savefig("harry_scatter.png", dpi=1200)
 
         foo = "bar"
 
@@ -480,4 +730,4 @@ dm = DosokyMeta()
 # We then output that againt a DataAnalysis
 # This gave us the set of outputs that are found in the directory 20210830T094047
 # From here we can start to work up the data for the actual study
-dm.start()
+dm.start_map_only()
