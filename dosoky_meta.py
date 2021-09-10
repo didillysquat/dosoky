@@ -4,6 +4,7 @@ This firstly means creating a new study that will contain the previously determi
 and then generating an output from this.
 """
 
+# TODO remove the database integration functionality so that user without db access can run this
 from collections import defaultdict
 import os
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
@@ -30,6 +31,7 @@ from cartopy.feature import NaturalEarthFeature, LAND, COASTLINE, OCEAN
 from cartopy.mpl.gridliner import Gridliner
 import math
 import spcolors
+from collections import Counter
 
 class DosokyMeta:
     # The input attributes control the map area we are plotting and how the networks are plotted
@@ -37,11 +39,20 @@ class DosokyMeta:
     # dosoky_centric = True or False. If True then we will only draw lines to and from the dosoky
     # site and not between the other sites.
     # clade can be A, C, D or all
-    def __init__(self, plot_no_lat_lon=False, area="rs_pag", dosoky_centric=False, clade="C"):
+    def __init__(self, plot_no_lat_lon=False, area="global", dosoky_centric=False, clade="all", use_diff_a=True):
         self.dosoky_centric = dosoky_centric
         self.clade = clade
-        
-        self.meta_df, self.post_med_count_df_abs, self.post_med_count_df_rel, self.profile_meta_df, self.profile_count_df_rel = self._read_in_symportal_objects()
+        self.use_diff_a = use_diff_a
+        if self.use_diff_a:
+            self.meta_df, self.post_med_count_df_abs, self.post_med_count_df_rel, self.profile_meta_df, self.profile_count_df_rel = self._read_in_symportal_objects_diff_a()
+        else:
+            self.meta_df, self.post_med_count_df_abs, self.post_med_count_df_rel, self.profile_meta_df, self.profile_count_df_rel = self._read_in_symportal_objects()
+
+        self._remove_duplicate_dosoky_samples()
+
+        self._remove_bad_dosoky_samples()
+
+        self._output_basic_dosoky_stats()
 
         self._remove_bad_profiles_and_associated_samples()
         
@@ -56,8 +67,8 @@ class DosokyMeta:
             "20170506_roberto_sp_v0.3.8", "20171017_roberto_sp_v0.3.8", "20171114_roberto_sp_v0.3.8"
         ]
 
-        self.data_sets = [DataSet.objects.get(name=_) for _ in self.names_of_data_sets_to_use]
-
+        # This will not remove any samples if the no_lat samples have already been removed as none of the larval samples
+        # have lat lons associated with them.
         self._remove_schupp_larval()
 
         # Sort the profile count df by abundance of the profiles
@@ -73,11 +84,140 @@ class DosokyMeta:
 
         # If we are working as dosoky centric then we only want to conern ourselves
         # with those profiles that were found at the dososky sites.
-        
         self.dosoky_profiles_list = self._get_dosoky_profiles_list()
 
+    def _remove_bad_dosoky_samples(self):
+        # four of the Dosoky samples didn't seuquence well and we want to delete them.
+        # They are the sequences with < 300 raw contigs
+        samples_to_keep = (self.meta_df["raw_contigs"] < 300) & (self.meta_df["data_set_name"] == "20190612_dosoky") == False
+        self.post_med_count_df_abs = self.post_med_count_df_abs.loc[samples_to_keep,]
+        self.meta_df = self.meta_df.loc[samples_to_keep,]
+        self.profile_count_df_rel = self.profile_count_df_rel.loc[samples_to_keep,]
+        self.post_med_count_df_rel = self.post_med_count_df_rel.loc[samples_to_keep,]
+
+    def _output_basic_dosoky_stats(self):
+        """
+        Output the basic stats on number of samples, genus and species for the paper.
+        This all comes before we start to remove samples with poor profiles
+        """
+        dosoky_meta_df = self.meta_df.loc[self.meta_df["data_set_name"] == "20190612_dosoky",]
+        print(f"There are {len(dosoky_meta_df.index)} dosoky samples")
+        dosoky_genera_set = set(dosoky_meta_df["host_genus"])
+        print(f"There are {len(dosoky_genera_set)} genera represented by the samples")
+        dosoky_species_set = set(zip(dosoky_meta_df["host_genus"], dosoky_meta_df["host_species"]))
+        print(f"and {len(dosoky_species_set)} species")
+        # Want to inspect whether there were other genera present
+        dosoky_profile_count_df = self.profile_count_df_rel.loc[dosoky_meta_df.index,]
+        dosoky_profile_count_df = dosoky_profile_count_df.loc[:,dosoky_profile_count_df.any(axis=0)]
+        dosoky_profile_meta_df = self.profile_meta_df.loc[dosoky_profile_count_df.columns,]
+        dosoky_seq_count_df = self.post_med_count_df_rel.loc[dosoky_meta_df.index,]
+        dosoky_seq_count_df = dosoky_seq_count_df.loc[:,dosoky_seq_count_df.any(axis=0)]
+        seq_clade_list = [_[0] if _[0] in list("ABCDEFGHI") else _[-1] for _ in dosoky_seq_count_df.columns]
+        non_acd_seqs = [_ for _ in dosoky_seq_count_df.columns if _[0] in list("BEFGHI") or _[-1] in list("BEFGHI")]
+        print(f"There were {len(non_acd_seqs)} non ACD sequences in dosoky")
+        non_acd_seq_prop = dosoky_seq_count_df.loc[:,non_acd_seqs].sum().sum() / dosoky_seq_count_df.sum().sum()
+        print(f"These sequences made up {non_acd_seq_prop * 100} percent of the dosoky sequences")
+        seq_clade_count = Counter(seq_clade_list)
+        print(f"This is the seq clade count: {seq_clade_count}")
+        profile_clade_count = Counter(dosoky_profile_meta_df["Clade"].values)
+        print(f"This is the profile clade count: {profile_clade_count}")
+        
+        # We want to know the distribution of the genera amongst the samples on
+        # a sample by sample basis.
+        # We will plot this up as a ternary plot
+        # For each sample we want to have a tuple with the three proportions
+
+        import ternary
+        # self.fig = plt.figure(figsize=(5, 5))
+        scale = 1
+        figure, tax = ternary.figure(scale=scale)
+        # self.gs = gridspec.GridSpec(1, 1)
+        # point_ax = plt.subplot(self.gs[0,0])
+        # self.fig, self.tax_point = ternary.figure(ax=point_ax, scale=1)
+        tax.boundary(linewidth=1)
+        tax.gridlines(color='black', multiple=0.1)
+        # self.tax_point.gridlines(color='blue', multiple=0.025, linewidth=0.5)
+        fontsize = 10
+        # self.tax.set_title("Genera proportion", fontsize=fontsize)
+        tax.right_corner_label("Durisdinium", fontsize=fontsize, fontstyle='italic')
+        tax.top_corner_label("Cladocopium", fontsize=fontsize, fontstyle='italic')
+        tax.left_corner_label("Symbiodinium", fontsize=fontsize, fontstyle='italic')
+        figure.savefig("harry.png", dpi=1200)
+        # self.tax_point.ticks(axis='lbr', linewidth=1, multiple=0.1, offset=0.025, tick_formats="%.2f")
+        foo = "bar"
+
+        symbiodinium_seqs = [_ for _ in dosoky_seq_count_df.columns if _[0] == "A" or _[-1] == "A"]
+        cladocopium_seqs = [_ for _ in dosoky_seq_count_df.columns if _[0] == "C" or _[-1] == "C"]
+        durusdinium_seqs = [_ for _ in dosoky_seq_count_df.columns if _[0] == "D" or _[-1] == "D"]
+        points = []
+        num_genera_dd = defaultdict(int)
+        for sample in dosoky_seq_count_df.index:
+            symbiodinium_abundnace = dosoky_seq_count_df.loc[sample, symbiodinium_seqs].sum()
+            cladocopium_abundnace = dosoky_seq_count_df.loc[sample, cladocopium_seqs].sum()
+            durusdinium_abundnace = dosoky_seq_count_df.loc[sample, durusdinium_seqs].sum()
+            points.append((durusdinium_abundnace, cladocopium_abundnace, symbiodinium_abundnace))
+            num_genera_dd[3 - [symbiodinium_abundnace, cladocopium_abundnace, durusdinium_abundnace].count(0)] += 1
+        tax.scatter(points, marker='o', color='black', s=20, alpha=0.5)
+        
+        tax.get_axes().axis('off')
+        tax.clear_matplotlib_ticks()
+        figure.savefig("harry.png", dpi=1200)
+
+        # THe figure looks great but now I want to get the numbers
+        print(f"This is the count of the genera across the samples {num_genera_dd}")
+        foo = "bar"
+        # def plot_ternary_clade_proportions(self):
+        # class TernaryPlot:
+        #     def __init__(self, parent):
+        #         import ternary
+        #         self.parent = parent
+        #         self.fig = plt.figure(figsize=(5, 5))
+
+        #         self.gs = gridspec.GridSpec(1, 1)
+        #         point_ax = plt.subplot(self.gs[0,0])
+        #         self.fig, self.tax_point = ternary.figure(ax=point_ax, scale=1)
+        #         self._setup_tax_point()
+        #         apples = 'asdf'
+
+        #     def _setup_tax_point(self):
+        #         self.tax_point.boundary(linewidth=1)
+        #         self.tax_point.gridlines(color='black', multiple=0.1)
+        #         # self.tax_point.gridlines(color='blue', multiple=0.025, linewidth=0.5)
+        #         fontsize = 20
+        #         # self.tax.set_title("Genera proportion", fontsize=fontsize)
+        #         self.tax_point.left_corner_label("Symbiodinium", fontsize='small', fontstyle='italic')
+        #         self.tax_point.right_corner_label("Durisdinium", fontsize='small', fontstyle='italic')
+        #         self.tax_point.top_corner_label("Cladocopium", fontsize='small', fontstyle='italic')
+        #         # self.tax_point.ticks(axis='lbr', linewidth=1, multiple=0.1, offset=0.025, tick_formats="%.2f")
+        #         self.tax_point.get_axes().axis('off')
+        #         self.tax_point.clear_matplotlib_ticks()
+
+        #     def _plot_ternary_points(self):
+        #         for sample_uid in self.parent.clade_proportion_df.index.values.tolist():
+        #             vals = [self.parent.clade_proportion_df.at[sample_uid, 'D'], self.parent.clade_proportion_df.at[sample_uid, 'C'], self.parent.clade_proportion_df.at[sample_uid, 'A']]
+        #             tot = sum(vals)
+        #             if tot != 0:
+        #                 prop_tup = tuple([val/tot for val in vals])
+        #                 self.tax_point.scatter([prop_tup], marker='o', color='black', s=20, alpha=0.5)
+        #         plt.savefig(os.path.join(self.parent.figure_dir, 'ternary_figure.png'), dpi=1200)
+        #         plt.savefig(os.path.join(self.parent.figure_dir, 'ternary_figure.svg'), dpi=1200)
+        
+        foo = "bar"
+
+    def _remove_duplicate_dosoky_samples(self):
+        # Dosoky sampled two coral colonies twice. One of the Stylophora wellsi (UID 106341 name=Egypt_D02)
+        # and one of Pocillopora verrucosa (UID 127844 name=Egypt_A02)
+        # remove those here
+        id_of_wellsi_to_remove = 127880
+        id_of_verrucosa_to_remove = 127844
+        samples_to_keep = [_ for _ in self.post_med_count_df_abs.index if _ not in [id_of_wellsi_to_remove, id_of_verrucosa_to_remove]]
+        self.post_med_count_df_abs = self.post_med_count_df_abs.loc[samples_to_keep,]
+        self.meta_df = self.meta_df.loc[samples_to_keep,]
+        self.profile_count_df_rel = self.profile_count_df_rel.loc[samples_to_keep,]
+        self.post_med_count_df_rel = self.post_med_count_df_rel.loc[samples_to_keep,]
+
     def _get_dosoky_profiles_list(self):
-        dosoky_dss_list_still_good = [_ for _ in self.profile_count_df_rel.index if _ in [_.id for _ in self.dosoky_dss_list]]
+        dosoky_dss_list_still_good = [_ for _ in self.profile_count_df_rel.index if _ in [_ for _ in self.dosoky_dss_list]]
         dosoky_profiles_df = self.profile_count_df_rel.loc[dosoky_dss_list_still_good,]
         dosoky_profiles_df = dosoky_profiles_df.loc[:,dosoky_profiles_df.any(axis=0)]
         return list(dosoky_profiles_df)
@@ -182,24 +322,11 @@ class DosokyMeta:
     def _get_lat_lon_info(self):
         # make a dict that is sample_uid to dataset uid
         # Then append this information to the self.meta_df
-        sample_uid_to_dataset_uid_dict = {}
-        sample_uid_to_dataset_name_dict = {}
-        data_set_uid_to_data_set_name_dict = {}
-        for ds in self.data_sets:
-            if ds.name == "20190612_dosoky":
-                dosoky_id = ds.id
-                dosoky_dss_list = list(DataSetSample.objects.filter(data_submission_from=ds))
-            data_set_uid_to_data_set_name_dict[ds.id] = ds.name
-            for dss in DataSetSample.objects.filter(data_submission_from=ds):
-                # If it is one of the datasetsamples that we kicked out due to being with a dodgy
-                # don't include it.
-                if dss.id not in self.meta_df.index:
-                    continue
-                sample_uid_to_dataset_uid_dict[dss.id] = ds.id
-                sample_uid_to_dataset_name_dict[dss.id] = ds.name
-        
-        self.meta_df["data_set_name"] = [sample_uid_to_dataset_name_dict[_] for _ in self.meta_df.index]
-        self.meta_df["data_set_uid"] = [sample_uid_to_dataset_uid_dict[_] for _ in self.meta_df.index]
+        sample_uid_to_dataset_uid_dict = {k: v for k, v in zip(self.meta_df.index, self.meta_df["data_set_uid"])}
+        sample_uid_to_dataset_name_dict = {k: v for k, v in zip(self.meta_df.index, self.meta_df["data_set_name"])}
+        data_set_uid_to_data_set_name_dict = {k: v for k, v in zip(self.meta_df["data_set_uid"], self.meta_df["data_set_name"])}
+        dosoky_id = list(set(self.meta_df[self.meta_df["data_set_name"] == "20190612_dosoky"]["data_set_uid"].values))[0]
+        dosoky_dss_list = list(self.meta_df[self.meta_df["data_set_name"] == "20190612_dosoky"].index.values)
         dosoky_lat, dosoky_lon = 25.54, 34.64
         
         return sample_uid_to_dataset_uid_dict, sample_uid_to_dataset_name_dict, data_set_uid_to_data_set_name_dict, dosoky_lat, dosoky_lon, dosoky_id, dosoky_dss_list
@@ -208,17 +335,9 @@ class DosokyMeta:
         # We then also want to remove most of the samples from the schupp analysis
         # as these were experimental with larvae. But there are some adult colonies that
         # we have lat lon for and these are what we want to work with
-        schupp_to_keep_uid_list = []
-        schupp_to_drop_uid_list = []
-        for ds in self.data_sets:
-            if ds.name == "20201018_schupp_all":
-                dss = DataSetSample.objects.filter(data_submission_from=ds).all()
-                for d in dss:
-                    if d.sample_type == "coral_field":
-                        schupp_to_keep_uid_list.append(d.id)
-                    else:
-                        schupp_to_drop_uid_list.append(d.id)
-
+        
+        schupp_to_drop_uid_list = self.meta_df.loc[(self.meta_df["data_set_name"] == "20201018_schupp_all") & (self.meta_df["sample_type"] != "coral_field"),].index.values
+        
         # Now drop these samples
         to_keep = [_ for _ in self.meta_df.index if _ not in schupp_to_drop_uid_list]
         self.meta_df = self.meta_df.loc[to_keep,]
@@ -228,8 +347,8 @@ class DosokyMeta:
 
         # Now check to see if there were any profiles that were only found in the schupp samples that we removed
         # that now have no counts in them
-        profiles_only_in_schupp = self.profile_count_df_rel.any(axis=0)
-        print(f"{sum(profiles_only_in_schupp)} profiles were only found in the schupp larval samples")
+        profiles_to_keep = self.profile_count_df_rel.any(axis=0)
+        print(f"{len(self.profile_count_df_rel.columns) - sum(profiles_to_keep)} profiles were only found in the schupp larval samples")
         self.profile_count_df_rel = self.profile_count_df_rel.loc[:,self.profile_count_df_rel.any(axis=0)]
         print(f"{len(self.profile_count_df_rel.columns)} profiles left after removing")
 
@@ -286,18 +405,58 @@ class DosokyMeta:
         self.post_med_count_df_abs = self.post_med_count_df_abs.loc[index_keep,]
         self.post_med_count_df_rel = self.post_med_count_df_rel.loc[index_keep,]
 
+    def _read_in_symportal_objects_diff_a(self):
+        if os.path.exists("cache_diff_a/meta_df.p"):
+            meta_df = pickle.load(open("cache_diff_a/meta_df.p", "rb"))
+        else:
+            meta_df = pd.read_csv("20210909T095937_new_a/post_med_seqs/170_Azero1_20210909T095937.seqs.absolute.meta_only.txt", sep="\t")
+            meta_df.set_index("sample_uid", inplace=True, drop=True)
+            pickle.dump(meta_df, open("cache_diff_a/meta_df.p", "wb"))
+        
+        if os.path.exists("cache_diff_a/post_med_count_df_abs.p"):
+            post_med_count_df_abs = pickle.load(open("cache_diff_a/post_med_count_df_abs.p", "rb"))
+        else:
+            post_med_count_df_abs = pd.read_csv("20210909T095937_new_a/post_med_seqs/170_Azero1_20210909T095937.seqs.absolute.abund_only.txt", sep="\t")
+            post_med_count_df_abs.set_index("sample_uid", inplace=True, drop=True)
+            pickle.dump(post_med_count_df_abs, open("cache_diff_a/post_med_count_df_abs.p", "wb"))
+        
+        if os.path.exists("cache_diff_a/post_med_count_df_rel.p"):
+            post_med_count_df_rel = pickle.load(open("cache_diff_a/post_med_count_df_rel.p", "rb"))
+        else:
+            post_med_count_df_rel = post_med_count_df_abs.div(post_med_count_df_abs.sum(axis=1), axis=0)
+            pickle.dump(post_med_count_df_rel, open("cache_diff_a/post_med_count_df_rel.p", "wb"))
+        
+        if os.path.exists("cache_diff_a/profile_meta_df.p"):
+            profile_meta_df = pickle.load(open("cache_diff_a/profile_meta_df.p", "rb"))
+        else:
+            profile_meta_df = pd.read_csv("20210909T095937_new_a/its2_type_profiles/170_Azero1_20210909T095937.profiles.meta_only.txt", sep="\t")
+            profile_meta_df.set_index("ITS2 type profile UID", inplace=True, drop=True)
+            pickle.dump(profile_meta_df, open("cache_diff_a/profile_meta_df.p", "wb"))
+        profile_uid_to_profile_name_dict = {k:v for k, v in profile_meta_df["ITS2 type profile"].items()}
+
+        if os.path.exists("cache_diff_a/profile_count_df_rel.p"):
+            profile_count_df_rel = pickle.load(open("cache_diff_a/profile_count_df_rel.p", "rb"))
+        else:
+            profile_count_df_rel = pd.read_csv("20210909T095937_new_a/its2_type_profiles/170_Azero1_20210909T095937.profiles.relative.abund_only.txt", sep="\t")
+            profile_count_df_rel.set_index("sample_uid", inplace=True, drop=True)
+            # make the headers int
+            profile_count_df_rel.columns = [int(_) for _ in list(profile_count_df_rel)]
+            pickle.dump(profile_count_df_rel, open("cache_diff_a/profile_count_df_rel.p", "wb"))
+
+        return meta_df, post_med_count_df_abs, post_med_count_df_rel, profile_meta_df, profile_count_df_rel
+
     def _read_in_symportal_objects(self):
         if os.path.exists("cache/meta_df.p"):
             meta_df = pickle.load(open("cache/meta_df.p", "rb"))
-        else:
-            meta_df = pd.read_csv("20210906T062437/post_med_seqs/169_20210830_DBV_20210906T062437.seqs.absolute.meta_only.txt", sep="\t")
+        else:# 169_20210830_DBV_20210909T034527
+            meta_df = pd.read_csv("20210909T034527/post_med_seqs/169_20210830_DBV_20210909T034527.seqs.absolute.meta_only.txt", sep="\t")
             meta_df.set_index("sample_uid", inplace=True, drop=True)
             pickle.dump(meta_df, open("cache/meta_df.p", "wb"))
         
         if os.path.exists("cache/post_med_count_df_abs.p"):
             post_med_count_df_abs = pickle.load(open("cache/post_med_count_df_abs.p", "rb"))
         else:
-            post_med_count_df_abs = pd.read_csv("20210906T062437/post_med_seqs/169_20210830_DBV_20210906T062437.seqs.absolute.abund_only.txt", sep="\t")
+            post_med_count_df_abs = pd.read_csv("20210909T034527/post_med_seqs/169_20210830_DBV_20210909T034527.seqs.absolute.abund_only.txt", sep="\t")
             post_med_count_df_abs.set_index("sample_uid", inplace=True, drop=True)
             pickle.dump(post_med_count_df_abs, open("cache/post_med_count_df_abs.p", "wb"))
         
@@ -310,7 +469,7 @@ class DosokyMeta:
         if os.path.exists("cache/profile_meta_df.p"):
             profile_meta_df = pickle.load(open("cache/profile_meta_df.p", "rb"))
         else:
-            profile_meta_df = pd.read_csv("20210906T062437/its2_type_profiles/169_20210830_DBV_20210906T062437.profiles.meta_only.txt", sep="\t")
+            profile_meta_df = pd.read_csv("20210909T034527/its2_type_profiles/169_20210830_DBV_20210909T034527.profiles.meta_only.txt", sep="\t")
             profile_meta_df.set_index("ITS2 type profile UID", inplace=True, drop=True)
             pickle.dump(profile_meta_df, open("cache/profile_meta_df.p", "wb"))
         profile_uid_to_profile_name_dict = {k:v for k, v in profile_meta_df["ITS2 type profile"].items()}
@@ -318,7 +477,7 @@ class DosokyMeta:
         if os.path.exists("cache/profile_count_df_rel.p"):
             profile_count_df_rel = pickle.load(open("cache/profile_count_df_rel.p", "rb"))
         else:
-            profile_count_df_rel = pd.read_csv("20210906T062437/its2_type_profiles/169_20210830_DBV_20210906T062437.profiles.relative.abund_only.txt", sep="\t")
+            profile_count_df_rel = pd.read_csv("20210909T034527/its2_type_profiles/169_20210830_DBV_20210909T034527.profiles.relative.abund_only.txt", sep="\t")
             profile_count_df_rel.set_index("sample_uid", inplace=True, drop=True)
             # make the headers int
             profile_count_df_rel.columns = [int(_) for _ in list(profile_count_df_rel)]
@@ -545,7 +704,10 @@ class DosokyMeta:
                 ax.set_xticks([])
                 ax.set_yticks([])
 
-            plt.savefig(f"profile_plots/{profile}_{profile_clade}.png", dpi=1200)
+            if self.use_diff_a:
+                plt.savefig(f"profile_plots_diff_a/{profile}_{profile_clade}.png", dpi=1200)
+            else:
+                plt.savefig(f"profile_plots/{profile}_{profile_clade}.png", dpi=1200)
             plt.close()
 
         foo = "bar"
@@ -708,19 +870,6 @@ class DosokyMeta:
         sizes = [_[1] for _ in lat_lon_as_list]
         return lats, lons, sizes
 
-    def create_meta_study(self):
-        # To generate a study we need to get all of the dataset samples from the above dataset
-        data_set_sample_list = []
-        for ds in self.data_sets:
-            data_set_sample_list.extend(list(DataSetSample.objects.filter(data_submission_from=ds)))
-
-        # Now we can create the new Study
-        new_study = Study(name="dosoky_meta", title="dosoky_meta", location="Red Sea")
-        new_study.save()
-        new_study.data_set_samples.set(data_set_sample_list)
-        new_study.save()
-        
-        print(f"{new_study.name}: {new_study.id}")
 
 # Create a study to work with that contais the 14 datasts listed above.
 dm = DosokyMeta()
